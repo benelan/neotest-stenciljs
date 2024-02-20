@@ -3,50 +3,46 @@ local async = require("neotest.async")
 local lib = require("neotest.lib")
 local logger = require("neotest.logging")
 local util = require("neotest-stenciljs.util")
-local stencil_util = require("neotest-stenciljs.stencil-util")
-local parameterized_tests = require("neotest-stenciljs.parameterized-tests")
 
 ---@class neotest.StencilOptions
----@field stencilTestCommand? string|fun(): string
----@field stencilConfigFile? string|fun(): string
+---@field stencilCommand? string|fun(): string
 ---@field env? table<string, string>|fun(): table<string, string>
 ---@field cwd? string|fun(): string
----@field strategy_config? table<string, unknown>|fun(): table<string, unknown>
+---@field filter_dir? fun(name: string, relpath: string, root: string): boolean
+---@field is_test_file? fun(file_path: string): boolean
 
----@type neotest.Adapter
-local adapter = { name = "neotest-stenciljs" }
+---@class neotest.Adapter
+local adapter = { name = "neotest-jest" }
 
 local rootPackageJson = vim.fn.getcwd() .. "/package.json"
 
+---@param packageJsonContent string
 ---@return boolean
-local function rootProjectHasStencilDependency()
-  local path = rootPackageJson
-
-  local success, packageJsonContent = pcall(lib.files.read, path)
-  if not success then
-    print("cannot read package.json")
-    return false
-  end
-
+local function hasStencilDependencyInJson(packageJsonContent)
   local parsedPackageJson = vim.json.decode(packageJsonContent)
 
-  if parsedPackageJson["dependencies"] then
-    for key, _ in pairs(parsedPackageJson["dependencies"]) do
-      if key == "@stencil/core" then
-        return true
-      end
-    end
-  end
-
-  if parsedPackageJson["devDependencies"] then
-    for key, _ in pairs(parsedPackageJson["devDependencies"]) do
-      if key == "@stencil/core" then
-        return true
+  for _, dependencyType in ipairs({ "dependencies", "devDependencies" }) do
+    if parsedPackageJson[dependencyType] then
+      for key, _ in pairs(parsedPackageJson[dependencyType]) do
+        if key == "@stencil/core" then
+          return true
+        end
       end
     end
   end
 
   return false
+end
+
+---@return boolean
+local function hasRootProjectStencilDependency()
+  local success, packageJsonContent = pcall(lib.files.read, rootPackageJson)
+  if not success then
+    print("cannot read package.json")
+    return false
+  end
+
+  return hasStencilDependencyInJson(packageJsonContent)
 end
 
 ---@param path string
@@ -64,33 +60,16 @@ local function hasStencilDependency(path)
     return false
   end
 
-  local parsedPackageJson = vim.json.decode(packageJsonContent)
-
-  if parsedPackageJson["dependencies"] then
-    for key, _ in pairs(parsedPackageJson["dependencies"]) do
-      if key == "stencil" then
-        return true
-      end
-    end
-  end
-
-  if parsedPackageJson["devDependencies"] then
-    for key, _ in pairs(parsedPackageJson["devDependencies"]) do
-      if key == "stencil" then
-        return true
-      end
-    end
-  end
-
-  return rootProjectHasStencilDependency()
+  return hasStencilDependencyInJson(packageJsonContent) or hasRootProjectStencilDependency()
 end
 
 adapter.root = function(path)
   return lib.files.match_root_pattern("package.json")(path)
 end
 
-local getStencilTestCommand = stencil_util.getStencilTestCommand
-local getStencilConfig = stencil_util.getStencilConfig
+function adapter.filter_dir(name, _relpath, _root)
+  return name ~= "node_modules"
+end
 
 ---@param file_path? string
 ---@return boolean
@@ -112,69 +91,24 @@ function adapter.is_test_file(file_path)
   return is_test_file and hasStencilDependency(file_path)
 end
 
-function adapter.filter_dir(name)
-  return name ~= "node_modules"
-end
-
-local function get_match_type(captured_nodes)
-  if captured_nodes["test.name"] then
-    return "test"
-  end
-  if captured_nodes["namespace.name"] then
-    return "namespace"
-  end
-end
-
--- Enrich `it.each` tests with metadata about TS node position
-function adapter.build_position(file_path, source, captured_nodes)
-  local match_type = get_match_type(captured_nodes)
-  if not match_type then
-    return
-  end
-
-  ---@type string
-  local name = vim.treesitter.get_node_text(captured_nodes[match_type .. ".name"], source)
-  local definition = captured_nodes[match_type .. ".definition"]
-
-  return {
-    type = match_type,
-    path = file_path,
-    name = name,
-    range = { definition:range() },
-    is_parameterized = captured_nodes["each_property"] and true or false,
-  }
-end
-
 ---@async
 ---@return neotest.Tree | nil
 function adapter.discover_positions(path)
   local query = [[
     ; -- Namespaces --
-    ; Matches: `describe('context', () => {})`
+    ; Matches: `describe('context')`
     ((call_expression
       function: (identifier) @func_name (#eq? @func_name "describe")
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
     )) @namespace.definition
-    ; Matches: `describe('context', function() {})`
-    ((call_expression
-      function: (identifier) @func_name (#eq? @func_name "describe")
-      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
-    )) @namespace.definition
-    ; Matches: `describe.only('context', () => {})`
+    ; Matches: `describe.only('context')`
     ((call_expression
       function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "describe")
       )
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
     )) @namespace.definition
-    ; Matches: `describe.only('context', function() {})`
-    ((call_expression
-      function: (member_expression
-        object: (identifier) @func_name (#any-of? @func_name "describe")
-      )
-      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
-    )) @namespace.definition
-    ; Matches: `describe.each(['data'])('context', () => {})`
+    ; Matches: `describe.each(['data'])('context')`
     ((call_expression
       function: (call_expression
         function: (member_expression
@@ -182,58 +116,62 @@ function adapter.discover_positions(path)
         )
       )
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
-    )) @namespace.definition
-    ; Matches: `describe.each(['data'])('context', function() {})`
-    ((call_expression
-      function: (call_expression
-        function: (member_expression
-          object: (identifier) @func_name (#any-of? @func_name "describe")
-        )
-      )
-      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
     )) @namespace.definition
 
     ; -- Tests --
     ; Matches: `test('test') / it('test')`
     ((call_expression
       function: (identifier) @func_name (#any-of? @func_name "it" "test")
-      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
+      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
     )) @test.definition
     ; Matches: `test.only('test') / it.only('test')`
     ((call_expression
       function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "test" "it")
       )
-      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
+      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
     )) @test.definition
     ; Matches: `test.each(['data'])('test') / it.each(['data'])('test')`
     ((call_expression
       function: (call_expression
         function: (member_expression
           object: (identifier) @func_name (#any-of? @func_name "it" "test")
-          property: (property_identifier) @each_property (#eq? @each_property "each")
         )
       )
-      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
+      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
     )) @test.definition
   ]]
 
-  local positions = lib.treesitter.parse_positions(path, query, {
-    nested_tests = false,
-    build_position = 'require("neotest-stenciljs").build_position',
-  })
+  return lib.treesitter.parse_positions(path, query, { nested_tests = true })
+end
 
-  local parameterized_tests_positions =
-    parameterized_tests.get_parameterized_tests_positions(positions)
+---@param path string
+---@return string
+local function getStencilCommand(path)
+ local gitAncestor = util.find_git_ancestor(path)
 
-  if adapter.stencil_test_discovery and #parameterized_tests_positions > 0 then
-    parameterized_tests.enrich_positions_with_parameterized_tests(
-      positions:data().path,
-      parameterized_tests_positions
-    )
+  local function findBinary(p)
+    local rootPath = util.find_node_modules_ancestor(p)
+    local stencilBinary = util.path.join(rootPath, "node_modules", ".bin", "stencil")
+
+    if util.path.exists(stencilBinary) then
+      return stencilBinary
+    end
+
+    -- If no binary found and the current directory isn't the parent
+    -- git ancestor, let's traverse up the tree again
+    if rootPath ~= gitAncestor then
+      return findBinary(util.path.dirname(rootPath))
+    end
   end
 
-  return positions
+  local foundBinary = findBinary(path)
+
+  if foundBinary then
+    return foundBinary
+  end
+
+  return "npx stencil"
 end
 
 local function escapeTestPattern(s)
@@ -249,11 +187,10 @@ local function escapeTestPattern(s)
       :gsub("%$", "%\\$")
       :gsub("%^", "%\\^")
       :gsub("%/", "%\\/")
-      :gsub("%'", "%\\'")
   )
 end
 
-local function get_default_strategy_config(strategy, command, cwd)
+local function get_strategy_config(strategy, command)
   local config = {
     dap = function()
       return {
@@ -264,8 +201,6 @@ local function get_default_strategy_config(strategy, command, cwd)
         runtimeExecutable = command[1],
         console = "integratedTerminal",
         internalConsoleOptions = "neverOpen",
-        rootPath = "${workspaceFolder}",
-        cwd = cwd or "${workspaceFolder}",
       }
     end,
   }
@@ -284,8 +219,55 @@ local function getCwd(path)
   return nil
 end
 
-local function getStrategyConfig(default_strategy_config, args)
-  return default_strategy_config
+---@param args neotest.RunArgs
+---@return neotest.RunSpec | nil
+function adapter.build_spec(args)
+  local results_path = async.fn.tempname() .. ".json"
+  local tree = args.tree
+
+  if not tree then
+    return
+  end
+
+  local pos = args.tree:data()
+  local testNamePattern = ".*"
+
+  if pos.type == "test" then
+    testNamePattern = escapeTestPattern(pos.name) .. "$"
+  end
+
+  if pos.type == "namespace" then
+    testNamePattern = "^ " .. escapeTestPattern(pos.name)
+  end
+
+  local binary = getStencilCommand(pos.path)
+  local command = vim.split(binary, "%s+")
+
+  vim.list_extend(command, {
+    "test",
+    "--spec",
+    "--e2e",
+    "--no-coverage",
+    "--testLocationInResults",
+    "--verbose",
+    "--json",
+    "--outputFile=" .. results_path,
+    "--testNamePattern=" .. testNamePattern,
+    "--forceExit",
+    "--",
+    pos.path,
+  })
+
+  return {
+    command = command,
+    cwd = getCwd(pos.path),
+    context = {
+      results_path = results_path,
+      file = pos.path,
+    },
+    strategy = get_strategy_config(args.strategy, command),
+    env = getEnv(args[2] and args[2].env or {}),
+  }
 end
 
 local function cleanAnsi(s)
@@ -296,19 +278,12 @@ local function cleanAnsi(s)
     :gsub("\x1b%[%d+m", "")
 end
 
-local function findErrorPosition(file, errStr)
-  -- Look for: /path/to/file.js:123:987
-  local regexp = file:gsub("([^%w])", "%%%1") .. "%:(%d+)%:(%d+)"
-  local _, _, errLine, errColumn = string.find(errStr, regexp)
-
-  return errLine, errColumn
-end
-
 local function parsed_json_to_results(data, output_file, consoleOut)
   local tests = {}
 
   for _, testResult in pairs(data.testResults) do
     local testFn = testResult.name
+
     for _, assertionResult in pairs(testResult.assertionResults) do
       local status, name = assertionResult.status, assertionResult.title
 
@@ -320,12 +295,14 @@ local function parsed_json_to_results(data, output_file, consoleOut)
       local keyid = testFn
 
       for _, value in ipairs(assertionResult.ancestorTitles) do
-        keyid = keyid .. "::" .. value
+        if value ~= "" then
+          keyid = keyid .. "::" .. value
+        end
       end
 
       keyid = keyid .. "::" .. name
 
-      if status == "pending" then
+      if status == "pending" or status == "todo" then
         status = "skipped"
       end
 
@@ -341,11 +318,10 @@ local function parsed_json_to_results(data, output_file, consoleOut)
 
         for i, failMessage in ipairs(assertionResult.failureMessages) do
           local msg = cleanAnsi(failMessage)
-          local errorLine, errorColumn = findErrorPosition(testFn, msg)
 
           errors[i] = {
-            line = (errorLine or assertionResult.location.line) - 1,
-            column = (errorColumn or 1) - 1,
+            line = (assertionResult.location and assertionResult.location.line - 1 or nil),
+            column = (assertionResult.location and assertionResult.location.column or nil),
             message = msg,
           }
 
@@ -360,90 +336,10 @@ local function parsed_json_to_results(data, output_file, consoleOut)
   return tests
 end
 
----@param args neotest.RunArgs
----@return neotest.RunSpec | nil
-function adapter.build_spec(args)
-  local results_path = async.fn.tempname() .. ".json"
-  local tree = args.tree
-
-  if not tree then
-    return
-  end
-
-  local pos = args.tree:data()
-  local testNamePattern = "'.*'"
-
-  if pos.type == "test" or pos.type == "namespace" then
-    -- pos.id in form "path/to/file::Describe text::test text"
-    local testName = string.sub(pos.id, string.find(pos.id, "::") + 2)
-    testName, _ = string.gsub(testName, "::", " ")
-    testNamePattern = escapeTestPattern(testName)
-    testNamePattern = pos.is_parameterized
-        and parameterized_tests.replaceTestParametersWithRegex(testNamePattern)
-      or testNamePattern
-    testNamePattern = "'^" .. testNamePattern
-    if pos.type == "test" then
-      testNamePattern = testNamePattern .. "$'"
-    else
-      testNamePattern = testNamePattern .. "'"
-    end
-  end
-
-  local binary = args.stencilTestCommand or getStencilTestCommand(pos.path)
-  local command = vim.split(binary, "%s+")
-
-  vim.list_extend(command, {
-    "--no-coverage",
-    "--testLocationInResults",
-    "--verbose",
-    "--json",
-    "--outputFile=" .. results_path,
-    "--testNamePattern=" .. testNamePattern,
-    "--forceExit",
-    "--",
-    vim.fs.normalize(pos.path),
-  })
-
-  local cwd = getCwd(pos.path)
-
-  -- creating empty file for streaming results
-  lib.files.write(results_path, "")
-  local stream_data, stop_stream = util.stream(results_path)
-
-  return {
-    command = command,
-    cwd = cwd,
-    context = {
-      results_path = results_path,
-      file = pos.path,
-      stop_stream = stop_stream,
-    },
-    stream = function()
-      return function()
-        local new_results = stream_data()
-        local ok, parsed = pcall(vim.json.decode, new_results, { luanil = { object = true } })
-
-        if not ok or not parsed.testResults then
-          return {}
-        end
-
-        return parsed_json_to_results(parsed, results_path, nil)
-      end
-    end,
-    strategy = getStrategyConfig(
-      get_default_strategy_config(args.strategy, command, cwd) or {},
-      args
-    ),
-    env = getEnv(args[2] and args[2].env or {}),
-  }
-end
-
 ---@async
 ---@param spec neotest.RunSpec
 ---@return neotest.Result[]
 function adapter.results(spec, b, tree)
-  spec.context.stop_stream()
-
   local output_file = spec.context.results_path
 
   local success, data = pcall(lib.files.read, output_file)
@@ -472,20 +368,14 @@ end
 setmetatable(adapter, {
   ---@param opts neotest.StencilOptions
   __call = function(_, opts)
-    if is_callable(opts.stencilTestCommand) then
-      getStencilTestCommand = opts.stencilTestCommand
-    elseif opts.stencilTestCommand then
-      getStencilTestCommand = function()
-        return opts.stencilTestCommand
+    if is_callable(opts.stencilCommand) then
+      getStencilCommand = opts.stencilCommand
+    elseif opts.stencilCommand then
+      getStencilCommand = function()
+        return opts.stencilCommand
       end
     end
-    if is_callable(opts.stencilConfigFile) then
-      getStencilConfig = opts.stencilConfigFile
-    elseif opts.stencilConfigFile then
-      getStencilConfig = function()
-        return opts.stencilConfigFile
-      end
-    end
+
     if is_callable(opts.env) then
       getEnv = opts.env
     elseif opts.env then
@@ -493,6 +383,7 @@ setmetatable(adapter, {
         return vim.tbl_extend("force", opts.env, specEnv)
       end
     end
+
     if is_callable(opts.cwd) then
       getCwd = opts.cwd
     elseif opts.cwd then
@@ -500,16 +391,16 @@ setmetatable(adapter, {
         return opts.cwd
       end
     end
-    if is_callable(opts.strategy_config) then
-      getStrategyConfig = opts.strategy_config
-    elseif opts.strategy_config then
-      getStrategyConfig = function()
-        return opts.strategy_config
-      end
+
+    if is_callable(opts.filter_dir) then
+      adapter.filter_dir = opts.filter_dir
     end
 
-    if opts.stencil_test_discovery then
-      adapter.stencil_test_discovery = true
+    if is_callable(opts.is_test_file) then
+      local is_test_file = adapter.is_test_file
+      adapter.is_test_file = function(file_path)
+        return is_test_file(file_path) and opts.is_test_file(file_path)
+      end
     end
 
     return adapter
