@@ -51,7 +51,7 @@ installed, otherwise no tests will be found:
 
 See the source code for the available configuration options:
 
-https://github.com/benelan/neotest-stenciljs/blob/36c67c70975543b251902886bd14e7be9d15f436/lua/neotest-stenciljs/init.lua#L7-L12
+https://github.com/benelan/neotest-stenciljs/blob/a54fa19ca5cc6179bfa1090390e30bb844fa6784/lua/neotest-stenciljs/init.lua#L7-L13
 
 An example configuration:
 
