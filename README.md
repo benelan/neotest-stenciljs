@@ -49,8 +49,11 @@ installed, otherwise no tests will be found:
 
 ## Configuration
 
-See the [source code](https://github.com/benelan/neotest-stenciljs/blob/main/lua/neotest-stenciljs/init.lua#L7)
-to find the available configuration options. For example:
+See the source code for the available configuration options:
+
+https://github.com/benelan/neotest-stenciljs/blob/36c67c70975543b251902886bd14e7be9d15f436/lua/neotest-stenciljs/init.lua#L7-L12
+
+An example configuration:
 
 ```lua
 require("neotest").setup({
