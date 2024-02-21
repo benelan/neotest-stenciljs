@@ -5,25 +5,26 @@ local logger = require("neotest.logging")
 local util = require("neotest-stenciljs.util")
 
 ---@class neotest.StencilOptions
----@field stencilCommand? string|fun(): string
----@field env? table<string, string>|fun(): table<string, string>
----@field cwd? string|fun(): string
+---@field watch? boolean Run test(s) with the `--watchAll` flag
+---@field no_build? boolean Run test(s) with the `--no-build` flag
+---@field env? table<string, string>|fun(): table<string, string> Set environment variables
+---@field cwd? string|fun(): string The current working directory for running tests
 ---@field filter_dir? fun(name: string, relpath: string, root: string): boolean
 ---@field is_test_file? fun(file_path: string): boolean
 
 ---@class neotest.Adapter
-local adapter = { name = "neotest-jest" }
+local adapter = { name = "neotest-stenciljs" }
 
-local rootPackageJson = vim.fn.getcwd() .. "/package.json"
+local root_package_json = vim.fn.getcwd() .. "/package.json"
 
----@param packageJsonContent string
+---@param json_content string
 ---@return boolean
-local function hasStencilDependencyInJson(packageJsonContent)
-  local parsedPackageJson = vim.json.decode(packageJsonContent)
+local function has_stencil_dep_in_json(json_content)
+  local parsed_json = vim.json.decode(json_content)
 
-  for _, dependencyType in ipairs({ "dependencies", "devDependencies" }) do
-    if parsedPackageJson[dependencyType] then
-      for key, _ in pairs(parsedPackageJson[dependencyType]) do
+  for _, dep_type in ipairs({ "dependencies", "devDependencies" }) do
+    if parsed_json[dep_type] then
+      for key, _ in pairs(parsed_json[dep_type]) do
         if key == "@stencil/core" then
           return true
         end
@@ -35,60 +36,63 @@ local function hasStencilDependencyInJson(packageJsonContent)
 end
 
 ---@return boolean
-local function hasRootProjectStencilDependency()
-  local success, packageJsonContent = pcall(lib.files.read, rootPackageJson)
+local function has_stencil_dep_in_project_root()
+  local success, json_content = pcall(lib.files.read, root_package_json)
   if not success then
     print("cannot read package.json")
     return false
   end
 
-  return hasStencilDependencyInJson(packageJsonContent)
+  return has_stencil_dep_in_json(json_content)
 end
 
 ---@param path string
 ---@return boolean
-local function hasStencilDependency(path)
-  local rootPath = lib.files.match_root_pattern("package.json")(path)
+local function has_stencil_dep(path)
+  local root_path = lib.files.match_root_pattern("package.json")(path)
 
-  if not rootPath then
+  if not root_path then
     return false
   end
 
-  local success, packageJsonContent = pcall(lib.files.read, rootPath .. "/package.json")
+  local success, json_content = pcall(lib.files.read, root_path .. "/package.json")
   if not success then
     print("cannot read package.json")
     return false
   end
 
-  return hasStencilDependencyInJson(packageJsonContent) or hasRootProjectStencilDependency()
+  return has_stencil_dep_in_json(json_content) or has_stencil_dep_in_project_root()
+end
+
+---@param file_path string
+---@return boolean
+local function is_e2e_test_file(file_path)
+  return string.match(file_path, "%.e2e%.tsx?$")
+end
+
+---@param file_path string
+---@return boolean
+local function is_spec_test_file(file_path)
+  return string.match(file_path, "%.spec%.tsx?$")
 end
 
 adapter.root = function(path)
   return lib.files.match_root_pattern("package.json")(path)
 end
 
-function adapter.filter_dir(name, _relpath, _root)
-  return name ~= "node_modules"
+function adapter.filter_dir(name, relpath, root)
+  return not vim.tbl_contains(
+    { "node_modules", "dist", "hydrate", "www", ".stencil", ".storybook" },
+    name
+  )
 end
 
 ---@param file_path? string
 ---@return boolean
 function adapter.is_test_file(file_path)
-  if file_path == nil then
-    return false
-  end
-  local is_test_file = false
-
-  for _, x in ipairs({ "spec", "e2e" }) do
-    for _, ext in ipairs({ "js", "jsx", "ts", "tsx" }) do
-      if string.match(file_path, "%." .. x .. "%." .. ext .. "$") then
-        is_test_file = true
-        goto matched_pattern
-      end
-    end
-  end
-  ::matched_pattern::
-  return is_test_file and hasStencilDependency(file_path)
+  return file_path ~= nil
+    and (is_e2e_test_file(file_path) or is_spec_test_file(file_path))
+    and has_stencil_dep(file_path)
 end
 
 ---@async
@@ -96,19 +100,31 @@ end
 function adapter.discover_positions(path)
   local query = [[
     ; -- Namespaces --
-    ; Matches: `describe('context')`
+    ; Matches: `describe('context', () => {})`
     ((call_expression
       function: (identifier) @func_name (#eq? @func_name "describe")
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
     )) @namespace.definition
-    ; Matches: `describe.only('context')`
+    ; Matches: `describe('context', function() {})`
+    ((call_expression
+      function: (identifier) @func_name (#eq? @func_name "describe")
+      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
+    )) @namespace.definition
+    ; Matches: `describe.only('context', () => {})`
     ((call_expression
       function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "describe")
       )
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
     )) @namespace.definition
-    ; Matches: `describe.each(['data'])('context')`
+    ; Matches: `describe.only('context', function() {})`
+    ((call_expression
+      function: (member_expression
+        object: (identifier) @func_name (#any-of? @func_name "describe")
+      )
+      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
+    )) @namespace.definition
+    ; Matches: `describe.each(['data'])('context', () => {})`
     ((call_expression
       function: (call_expression
         function: (member_expression
@@ -117,28 +133,38 @@ function adapter.discover_positions(path)
       )
       arguments: (arguments (string (string_fragment) @namespace.name) (arrow_function))
     )) @namespace.definition
+    ; Matches: `describe.each(['data'])('context', function() {})`
+    ((call_expression
+      function: (call_expression
+        function: (member_expression
+          object: (identifier) @func_name (#any-of? @func_name "describe")
+        )
+      )
+      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
+    )) @namespace.definition
 
     ; -- Tests --
     ; Matches: `test('test') / it('test')`
     ((call_expression
       function: (identifier) @func_name (#any-of? @func_name "it" "test")
-      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
+      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
     )) @test.definition
     ; Matches: `test.only('test') / it.only('test')`
     ((call_expression
       function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "test" "it")
       )
-      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
+      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
     )) @test.definition
     ; Matches: `test.each(['data'])('test') / it.each(['data'])('test')`
     ((call_expression
       function: (call_expression
         function: (member_expression
           object: (identifier) @func_name (#any-of? @func_name "it" "test")
+          property: (property_identifier) @each_property (#eq? @each_property "each")
         )
       )
-      arguments: (arguments (string (string_fragment) @test.name) (arrow_function))
+      arguments: (arguments (string (string_fragment) @test.name) [(arrow_function) (function_expression)])
     )) @test.definition
   ]]
 
@@ -147,34 +173,34 @@ end
 
 ---@param path string
 ---@return string
-local function getStencilCommand(path)
- local gitAncestor = util.find_git_ancestor(path)
+local function get_stencil_command(path)
+  local git_ancestor = util.find_git_ancestor(path)
 
-  local function findBinary(p)
-    local rootPath = util.find_node_modules_ancestor(p)
-    local stencilBinary = util.path.join(rootPath, "node_modules", ".bin", "stencil")
+  local function find_binary(p)
+    local root_path = util.find_node_modules_ancestor(p)
+    local stencil_binary = util.path.join(root_path, "node_modules", ".bin", "stencil")
 
-    if util.path.exists(stencilBinary) then
-      return stencilBinary
+    if util.path.exists(stencil_binary) then
+      return stencil_binary
     end
 
     -- If no binary found and the current directory isn't the parent
     -- git ancestor, let's traverse up the tree again
-    if rootPath ~= gitAncestor then
-      return findBinary(util.path.dirname(rootPath))
+    if root_path ~= git_ancestor then
+      return find_binary(util.path.dirname(root_path))
     end
   end
 
-  local foundBinary = findBinary(path)
+  local found_binary = find_binary(path)
 
-  if foundBinary then
-    return foundBinary
+  if found_binary then
+    return found_binary
   end
 
   return "npx stencil"
 end
 
-local function escapeTestPattern(s)
+local function escape_test_pattern(s)
   return (
     s:gsub("%(", "%\\(")
       :gsub("%)", "%\\)")
@@ -209,13 +235,13 @@ local function get_strategy_config(strategy, command)
   end
 end
 
-local function getEnv(specEnv)
-  return specEnv
+local function get_env(spec_env)
+  return spec_env
 end
 
----@param path string
+---@param file_path string
 ---@return string|nil
-local function getCwd(path)
+local function get_cwd(file_path)
   return nil
 end
 
@@ -230,29 +256,36 @@ function adapter.build_spec(args)
   end
 
   local pos = args.tree:data()
-  local testNamePattern = ".*"
+  local test_name_pattern = ".*"
 
   if pos.type == "test" then
-    testNamePattern = escapeTestPattern(pos.name) .. "$"
+    test_name_pattern = escape_test_pattern(pos.name) .. "$"
   end
 
   if pos.type == "namespace" then
-    testNamePattern = "^ " .. escapeTestPattern(pos.name)
+    test_name_pattern = "^ " .. escape_test_pattern(pos.name)
   end
 
-  local binary = getStencilCommand(pos.path)
+  local binary = get_stencil_command(pos.path)
   local command = vim.split(binary, "%s+")
+
+  local is_spec = is_spec_test_file(pos.path)
+  local is_e2e = is_e2e_test_file(pos.path)
 
   vim.list_extend(command, {
     "test",
-    "--spec",
-    "--e2e",
+    is_spec and "--spec" or nil,
+    is_e2e and "--e2e" or nil,
+    not is_spec and not is_e2e and "--spec" or nil,
+    not is_spec and not is_e2e and "--e2e" or nil,
+    adapter.watch == true and "--watchAll" or nil,
+    adapter.no_build == true and "--no-build" or nil,
     "--no-coverage",
     "--testLocationInResults",
     "--verbose",
     "--json",
     "--outputFile=" .. results_path,
-    "--testNamePattern=" .. testNamePattern,
+    "--testNamePattern=" .. test_name_pattern,
     "--forceExit",
     "--",
     pos.path,
@@ -260,17 +293,17 @@ function adapter.build_spec(args)
 
   return {
     command = command,
-    cwd = getCwd(pos.path),
+    cwd = get_cwd(pos.path),
     context = {
       results_path = results_path,
       file = pos.path,
     },
     strategy = get_strategy_config(args.strategy, command),
-    env = getEnv(args[2] and args[2].env or {}),
+    env = get_env(args[2] and args[2].env or {}),
   }
 end
 
-local function cleanAnsi(s)
+local function clean_ansi(s)
   return s:gsub("\x1b%[%d+;%d+;%d+;%d+;%d+m", "")
     :gsub("\x1b%[%d+;%d+;%d+;%d+m", "")
     :gsub("\x1b%[%d+;%d+;%d+m", "")
@@ -317,7 +350,7 @@ local function parsed_json_to_results(data, output_file, consoleOut)
         local errors = {}
 
         for i, failMessage in ipairs(assertionResult.failureMessages) do
-          local msg = cleanAnsi(failMessage)
+          local msg = clean_ansi(failMessage)
 
           errors[i] = {
             line = (assertionResult.location and assertionResult.location.line - 1 or nil),
@@ -368,26 +401,26 @@ end
 setmetatable(adapter, {
   ---@param opts neotest.StencilOptions
   __call = function(_, opts)
-    if is_callable(opts.stencilCommand) then
-      getStencilCommand = opts.stencilCommand
-    elseif opts.stencilCommand then
-      getStencilCommand = function()
-        return opts.stencilCommand
-      end
+    if opts.watch ~= nil then
+      adapter.watch = opts.watch
+    end
+
+    if opts.no_build ~= nil then
+      adapter.no_build = opts.no_build
     end
 
     if is_callable(opts.env) then
-      getEnv = opts.env
+      get_env = opts.env ---@diagnostic disable-line: cast-local-type
     elseif opts.env then
-      getEnv = function(specEnv)
-        return vim.tbl_extend("force", opts.env, specEnv)
+      get_env = function(spec_env)
+        return vim.tbl_extend("force", opts.env, spec_env) ---@diagnostic disable-line: param-type-mismatch
       end
     end
 
     if is_callable(opts.cwd) then
-      getCwd = opts.cwd
+      get_cwd = opts.cwd ---@diagnostic disable-line: cast-local-type
     elseif opts.cwd then
-      getCwd = function()
+      get_cwd = function()
         return opts.cwd
       end
     end
