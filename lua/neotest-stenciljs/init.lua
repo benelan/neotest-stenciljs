@@ -104,35 +104,32 @@ function adapter.discover_positions(path)
     ; --------------------------------------------------------------------------
     ; Matches: `describe('context', () => {})`
     ((call_expression
-        function: (identifier) @func_name (#eq? @func_name "describe")
-        arguments: (arguments [
-                        (string (string_fragment) @namespace.name)
-                        (template_string (string_fragment) @namespace.name)
-                    ] [(arrow_function) (function_expression)])
+      function: (identifier) @func_name (#eq? @func_name "describe")
+      arguments: (arguments
+        [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (arrow_function)
+      )
     )) @namespace.definition
     ; --------------------------------------------------------------------------
     ; Matches: `describe.only('context', () => {})`
     ((call_expression
-        function: (member_expression
+      function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "describe")
-        )
-        arguments: (arguments [
-                        (string (string_fragment) @namespace.name)
-                        (template_string (string_fragment) @namespace.name)
-                    ] [(arrow_function) (function_expression)])
+      )
+      arguments: (arguments
+        [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (arrow_function)
+      )
     )) @namespace.definition
     ; --------------------------------------------------------------------------
     ; Matches: `describe.each(['data'])('context', () => {})`
     ((call_expression
-        function: (call_expression
+      function: (call_expression
         function: (member_expression
-            object: (identifier) @func_name (#any-of? @func_name "describe")
+          object: (identifier) @func_name (#any-of? @func_name "describe")
         )
-        )
-        arguments: (arguments [
-                        (string (string_fragment) @namespace.name)
-                        (template_string (string_fragment) @namespace.name)
-                    ] [(arrow_function) (function_expression)])
+      )
+      arguments: (arguments
+        [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (arrow_function)
+      )
     )) @namespace.definition
     ; --------------------------------------------------------------------------
     ; -- Tests --
@@ -140,35 +137,32 @@ function adapter.discover_positions(path)
     ; Matches: `test('test') / it('test')`
     ((call_expression
         function: (identifier) @func_name (#any-of? @func_name "it" "test")
-        arguments: (arguments [
-                        (string (string_fragment) @test.name)
-                        (template_string (string_fragment) @test.name)
-                    ] [(arrow_function) (function_expression)])
+        arguments: (arguments
+          [(string (string_fragment) @test.name) (template_string (string_fragment) @test.name)] [(arrow_function) (function_expression)]
+        )
     )) @test.definition
     ; --------------------------------------------------------------------------
     ; Matches: `test.only('test') / it.only('test')`
     ((call_expression
-        function: (member_expression
+      function: (member_expression
         object: (identifier) @func_name (#any-of? @func_name "test" "it")
-        )
-        arguments: (arguments [
-                        (string (string_fragment) @test.name)
-                        (template_string (string_fragment) @test.name)
-                    ] [(arrow_function) (function_expression)])
+      )
+      arguments: (arguments
+        [(string (string_fragment) @test.name) (template_string (string_fragment) @test.name)] [(arrow_function) (function_expression)]
+      )
     )) @test.definition
     ; --------------------------------------------------------------------------
     ; Matches: `test.each(['data'])('test') / it.each(['data'])('test')`
     ((call_expression
-        function: (call_expression
+      function: (call_expression
         function: (member_expression
             object: (identifier) @func_name (#any-of? @func_name "it" "test")
             property: (property_identifier) @each_property (#eq? @each_property "each")
         )
-        )
-        arguments: (arguments [
-                        (string (string_fragment) @test.name)
-                        (template_string (string_fragment) @test.name)
-                    ] [(arrow_function) (function_expression)])
+      )
+      arguments: (arguments
+        [(string (string_fragment) @test.name) (template_string (string_fragment) @test.name)] [(arrow_function) (function_expression)]
+      )
     )) @test.definition
   ]]
 
@@ -224,6 +218,14 @@ local function escape_test_pattern(s)
   )
 end
 
+local function clean_ansi(s)
+  return s:gsub("\x1b%[%d+;%d+;%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+m", "")
+    :gsub("\x1b%[%d+m", "")
+end
+
 local function get_strategy_config(strategy, command)
   local config = {
     dap = function()
@@ -251,72 +253,6 @@ end
 ---@return string|nil
 local function get_cwd(file_path)
   return nil
-end
-
----@param args neotest.RunArgs
----@return neotest.RunSpec | nil
-function adapter.build_spec(args)
-  local results_path = async.fn.tempname() .. ".json"
-  local tree = args.tree
-
-  if not tree then
-    return
-  end
-
-  local pos = args.tree:data()
-  local test_name_pattern = ".*"
-
-  if pos.type == "test" then
-    test_name_pattern = escape_test_pattern(pos.name) .. "$"
-  end
-
-  if pos.type == "namespace" then
-    test_name_pattern = "^ " .. escape_test_pattern(pos.name)
-  end
-
-  local binary = get_stencil_command(pos.path)
-  local command = vim.split(binary, "%s+")
-
-  local is_spec = is_spec_test_file(pos.path)
-  local is_e2e = is_e2e_test_file(pos.path)
-
-  vim.list_extend(command, {
-    "test",
-    is_spec and "--spec" or nil,
-    is_e2e and "--e2e" or nil,
-    not is_spec and not is_e2e and "--spec" or nil,
-    not is_spec and not is_e2e and "--e2e" or nil,
-    adapter.watch == true and "--watchAll" or nil,
-    adapter.no_build == true and "--no-build" or nil,
-    "--no-coverage",
-    "--testLocationInResults",
-    "--verbose",
-    "--json",
-    "--outputFile=" .. results_path,
-    "--testNamePattern=" .. test_name_pattern,
-    "--forceExit",
-    "--",
-    pos.path,
-  })
-
-  return {
-    command = command,
-    cwd = get_cwd(pos.path),
-    context = {
-      results_path = results_path,
-      file = pos.path,
-    },
-    strategy = get_strategy_config(args.strategy, command),
-    env = get_env(args[2] and args[2].env or {}),
-  }
-end
-
-local function clean_ansi(s)
-  return s:gsub("\x1b%[%d+;%d+;%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+m", "")
-    :gsub("\x1b%[%d+m", "")
 end
 
 local function parsed_json_to_results(data, output_file, consoleOut)
@@ -375,6 +311,108 @@ local function parsed_json_to_results(data, output_file, consoleOut)
   end
 
   return tests
+end
+
+---@param args neotest.RunArgs
+---@return neotest.RunSpec | nil
+function adapter.build_spec(args)
+  local results_path = async.fn.tempname() .. ".json"
+  local tree = args.tree
+
+  if not tree then
+    return
+  end
+
+  local pos = args.tree:data()
+  local test_name_pattern = ".*"
+
+  if pos.type == "test" then
+    test_name_pattern = escape_test_pattern(pos.name) .. "$"
+  end
+
+  if pos.type == "namespace" then
+    test_name_pattern = "^ " .. escape_test_pattern(pos.name)
+  end
+
+  local binary = get_stencil_command(pos.path)
+  local command = vim.split(binary, "%s+")
+
+  local is_spec = is_spec_test_file(pos.path)
+  local is_e2e = is_e2e_test_file(pos.path)
+
+  local watch = args.watch == nil and adapter.watch or args.watch
+  local no_build = args.no_build == nil and adapter.no_build or args.no_build
+
+  vim.list_extend(command, {
+    "test",
+    is_spec and "--spec" or nil,
+    is_e2e and "--e2e" or nil,
+    not is_spec and not is_e2e and "--spec" or nil,
+    not is_spec and not is_e2e and "--e2e" or nil,
+    watch == true and "--watch" or nil,
+    no_build == true and "--no-build" or nil,
+    "--no-coverage",
+    "--forceExit",
+    "--verbose",
+    "--json",
+    "--testLocationInResults",
+    string.format("--outputFile='%s'", results_path),
+    string.format("--testNamePattern='%s'", test_name_pattern),
+    "--",
+    pos.path,
+  })
+
+  -- creating empty file for streaming results
+  lib.files.write(results_path, "")
+  local stream_data, stop_stream = util.stream(results_path)
+
+  return {
+    command = command,
+    cwd = get_cwd(pos.path),
+    context = {
+      results_path = results_path,
+      file = pos.path,
+      stop_stream = stop_stream,
+    },
+    strategy = get_strategy_config(args.strategy, command),
+    env = get_env(args[2] and args[2].env or {}),
+    stream = function()
+      return function()
+        local new_results = stream_data()
+        local ok, parsed = pcall(vim.json.decode, new_results, { luanil = { object = true } })
+
+        if not ok or not parsed.testResults then
+          return {}
+        end
+
+        return parsed_json_to_results(parsed, results_path, nil)
+      end
+    end,
+  }
+end
+
+---@async
+---@param spec neotest.RunSpec
+---@return neotest.Result[]
+function adapter.results(spec, b, tree)
+  spec.context.stop_stream()
+
+  local output_file = spec.context.results_path
+  local success, data = pcall(lib.files.read, output_file)
+
+  if not success then
+    logger.error("No test output file found ", output_file)
+    return {}
+  end
+
+  local ok, parsed = pcall(vim.json.decode, data, { luanil = { object = true } })
+  if not ok then
+    logger.error("Failed to parse test output json ", output_file)
+    return {}
+  end
+
+  local results = parsed_json_to_results(parsed, output_file, b.output)
+  return results
 end
 
 ---@async
