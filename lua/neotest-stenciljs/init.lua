@@ -5,7 +5,7 @@ local logger = require("neotest.logging")
 local util = require("neotest-stenciljs.util")
 
 ---@class neotest.StencilOptions
----@field watch? boolean Run test(s) with the `--watchAll` flag
+---@field watch? boolean Run test(s) with the `--watch` flag
 ---@field no_build? boolean Run test(s) with the `--no-build` flag
 ---@field env? table<string, string>|fun(): table<string, string> Set environment variables
 ---@field cwd? string|fun(): string The current working directory for running tests
@@ -74,6 +74,146 @@ end
 ---@return boolean
 local function is_spec_test_file(file_path)
   return string.match(file_path, "%.spec%.tsx?$")
+end
+
+---@param path string
+---@return string
+local function get_stencil_command(path)
+  local git_ancestor = util.find_git_ancestor(path)
+
+  local function find_binary(p)
+    local root_path = util.find_node_modules_ancestor(p)
+    local stencil_binary = util.path.join(root_path, "node_modules", ".bin", "stencil")
+
+    if util.path.exists(stencil_binary) then
+      return stencil_binary
+    end
+
+    -- If no binary found and the current directory isn't the parent
+    -- git ancestor, let's traverse up the tree again
+    if root_path ~= git_ancestor then
+      return find_binary(util.path.dirname(root_path))
+    end
+  end
+
+  local found_binary = find_binary(path)
+
+  if found_binary then
+    return found_binary
+  end
+
+  return "npx stencil"
+end
+
+local function escape_test_pattern(s)
+  return (
+    s:gsub("%(", "%\\(")
+      :gsub("%)", "%\\)")
+      :gsub("%]", "%\\]")
+      :gsub("%[", "%\\[")
+      :gsub("%*", "%\\*")
+      :gsub("%+", "%\\+")
+      :gsub("%-", "%\\-")
+      :gsub("%?", "%\\?")
+      :gsub("%$", "%\\$")
+      :gsub("%^", "%\\^")
+      :gsub("%/", "%\\/")
+  )
+end
+
+local function clean_ansi(s)
+  return s:gsub("\x1b%[%d+;%d+;%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+;%d+m", "")
+    :gsub("\x1b%[%d+;%d+m", "")
+    :gsub("\x1b%[%d+m", "")
+end
+
+local function get_strategy_config(strategy, command)
+  local config = {
+    dap = function()
+      return {
+        name = "Debug Stencil Tests",
+        type = "pwa-node",
+        request = "launch",
+        args = { unpack(command, 2) },
+        runtimeExecutable = command[1],
+        console = "integratedTerminal",
+        internalConsoleOptions = "neverOpen",
+      }
+    end,
+  }
+  if config[strategy] then
+    return config[strategy]()
+  end
+end
+
+local function get_env(spec_env)
+  return spec_env
+end
+
+---@param file_path string
+---@return string|nil
+local function get_cwd(file_path)
+  return nil
+end
+
+local function parsed_json_to_results(data, output_file, console_out)
+  local tests = {}
+
+  for _, test_result in pairs(data.testResults) do
+    local test_file = test_result.name
+
+    for _, assertion_result in pairs(test_result.assertionResults) do
+      local status, name = assertion_result.status, assertion_result.title
+
+      if name == nil then
+        logger.error("Failed to find parsed test result ", assertion_result)
+        return {}
+      end
+
+      local keyid = test_file
+
+      for _, value in ipairs(assertion_result.ancestorTitles) do
+        if value ~= "" then
+          keyid = keyid .. "::" .. value
+        end
+      end
+
+      keyid = keyid .. "::" .. name
+
+      if status == "pending" or status == "todo" then
+        status = "skipped"
+      end
+
+      tests[keyid] = {
+        status = status,
+        short = name .. ": " .. status,
+        output = console_out,
+        location = assertion_result.location,
+      }
+
+      if not vim.tbl_isempty(assertion_result.failureMessages) then
+        local errors = {}
+
+        for i, fail_message in ipairs(assertion_result.failureMessages) do
+          local msg = clean_ansi(fail_message)
+
+          errors[i] = {
+            line = (assertion_result.location and assertion_result.location.line - 1 or nil),
+            column = (assertion_result.location and assertion_result.location.column or nil),
+            message = msg,
+          }
+
+          tests[keyid].short = tests[keyid].short .. "\n" .. msg
+        end
+
+        tests[keyid].errors = errors
+      end
+    end
+  end
+
+  return tests
 end
 
 adapter.root = function(path)
@@ -201,147 +341,6 @@ function adapter.discover_positions(path)
   )
 end
 
----@param path string
----@return string
-local function get_stencil_command(path)
-  local git_ancestor = util.find_git_ancestor(path)
-
-  local function find_binary(p)
-    local root_path = util.find_node_modules_ancestor(p)
-    local stencil_binary = util.path.join(root_path, "node_modules", ".bin", "stencil")
-
-    if util.path.exists(stencil_binary) then
-      return stencil_binary
-    end
-
-    -- If no binary found and the current directory isn't the parent
-    -- git ancestor, let's traverse up the tree again
-    if root_path ~= git_ancestor then
-      return find_binary(util.path.dirname(root_path))
-    end
-  end
-
-  local found_binary = find_binary(path)
-
-  if found_binary then
-    return found_binary
-  end
-
-  return "npx stencil"
-end
-
-local function escape_test_pattern(s)
-  return (
-    s:gsub("%(", "%\\(")
-      :gsub("%)", "%\\)")
-      :gsub("%]", "%\\]")
-      :gsub("%[", "%\\[")
-      :gsub("%*", "%\\*")
-      :gsub("%+", "%\\+")
-      :gsub("%-", "%\\-")
-      :gsub("%?", "%\\?")
-      :gsub("%$", "%\\$")
-      :gsub("%^", "%\\^")
-      :gsub("%/", "%\\/")
-  )
-end
-
-local function clean_ansi(s)
-  return s:gsub("\x1b%[%d+;%d+;%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+;%d+m", "")
-    :gsub("\x1b%[%d+;%d+m", "")
-    :gsub("\x1b%[%d+m", "")
-end
-
-local function get_strategy_config(strategy, command)
-  local config = {
-    dap = function()
-      return {
-        name = "Debug Stencil Tests",
-        type = "pwa-node",
-        request = "launch",
-        args = { unpack(command, 2) },
-        runtimeExecutable = command[1],
-        console = "integratedTerminal",
-        internalConsoleOptions = "neverOpen",
-      }
-    end,
-  }
-  if config[strategy] then
-    return config[strategy]()
-  end
-end
-
-local function get_env(spec_env)
-  return spec_env
-end
-
----@param file_path string
----@return string|nil
-local function get_cwd(file_path)
-  return nil
-end
-
-local function parsed_json_to_results(data, output_file, consoleOut)
-local function parsed_json_to_results(data, output_file, console_out)
-  local tests = {}
-
-  for _, test_result in pairs(data.testResults) do
-    local test_file = test_result.name
-
-    for _, assertion_result in pairs(test_result.assertionResults) do
-      local status, name = assertion_result.status, assertion_result.title
-
-      if name == nil then
-        logger.error("Failed to find parsed test result ", assertion_result)
-        return {}
-      end
-
-      local keyid = test_file
-
-      for _, value in ipairs(assertion_result.ancestorTitles) do
-        if value ~= "" then
-          keyid = keyid .. "::" .. value
-        end
-      end
-
-      keyid = keyid .. "::" .. name
-
-      if status == "pending" or status == "todo" then
-        status = "skipped"
-      end
-
-      tests[keyid] = {
-        status = status,
-        short = name .. ": " .. status,
-        output = console_out,
-        location = assertion_result.location,
-      }
-
-      if not vim.tbl_isempty(assertion_result.failureMessages) then
-        local errors = {}
-
-        for i, fail_message in ipairs(assertion_result.failureMessages) do
-          local msg = clean_ansi(fail_message)
-
-          errors[i] = {
-            line = (assertion_result.location and assertion_result.location.line - 1 or nil),
-            column = (assertion_result.location and assertion_result.location.column or nil),
-            message = msg,
-          }
-
-          tests[keyid].short = tests[keyid].short .. "\n" .. msg
-        end
-
-        tests[keyid].errors = errors
-      end
-    end
-  end
-
-  return tests
-end
-
 ---@param args neotest.RunArgs
 ---@return neotest.RunSpec | nil
 function adapter.build_spec(args)
@@ -427,7 +426,6 @@ function adapter.results(spec, b, tree)
   spec.context.stop_stream()
 
   local output_file = spec.context.results_path
-
   local success, data = pcall(lib.files.read, output_file)
 
   if not success then
@@ -436,14 +434,12 @@ function adapter.results(spec, b, tree)
   end
 
   local ok, parsed = pcall(vim.json.decode, data, { luanil = { object = true } })
-
   if not ok then
     logger.error("Failed to parse test output json ", output_file)
     return {}
   end
 
   local results = parsed_json_to_results(parsed, output_file, b.output)
-
   return results
 end
 
