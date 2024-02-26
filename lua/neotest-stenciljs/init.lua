@@ -284,22 +284,23 @@ local function get_cwd(file_path)
 end
 
 local function parsed_json_to_results(data, output_file, consoleOut)
+local function parsed_json_to_results(data, output_file, console_out)
   local tests = {}
 
-  for _, testResult in pairs(data.testResults) do
-    local testFn = testResult.name
+  for _, test_result in pairs(data.testResults) do
+    local test_file = test_result.name
 
-    for _, assertionResult in pairs(testResult.assertionResults) do
-      local status, name = assertionResult.status, assertionResult.title
+    for _, assertion_result in pairs(test_result.assertionResults) do
+      local status, name = assertion_result.status, assertion_result.title
 
       if name == nil then
-        logger.error("Failed to find parsed test result ", assertionResult)
+        logger.error("Failed to find parsed test result ", assertion_result)
         return {}
       end
 
-      local keyid = testFn
+      local keyid = test_file
 
-      for _, value in ipairs(assertionResult.ancestorTitles) do
+      for _, value in ipairs(assertion_result.ancestorTitles) do
         if value ~= "" then
           keyid = keyid .. "::" .. value
         end
@@ -314,19 +315,19 @@ local function parsed_json_to_results(data, output_file, consoleOut)
       tests[keyid] = {
         status = status,
         short = name .. ": " .. status,
-        output = consoleOut,
-        location = assertionResult.location,
+        output = console_out,
+        location = assertion_result.location,
       }
 
-      if not vim.tbl_isempty(assertionResult.failureMessages) then
+      if not vim.tbl_isempty(assertion_result.failureMessages) then
         local errors = {}
 
-        for i, failMessage in ipairs(assertionResult.failureMessages) do
-          local msg = clean_ansi(failMessage)
+        for i, fail_message in ipairs(assertion_result.failureMessages) do
+          local msg = clean_ansi(fail_message)
 
           errors[i] = {
-            line = (assertionResult.location and assertionResult.location.line - 1 or nil),
-            column = (assertionResult.location and assertionResult.location.column or nil),
+            line = (assertion_result.location and assertion_result.location.line - 1 or nil),
+            column = (assertion_result.location and assertion_result.location.column or nil),
             message = msg,
           }
 
@@ -425,28 +426,6 @@ end
 function adapter.results(spec, b, tree)
   spec.context.stop_stream()
 
-  local output_file = spec.context.results_path
-  local success, data = pcall(lib.files.read, output_file)
-
-  if not success then
-    logger.error("No test output file found ", output_file)
-    return {}
-  end
-
-  local ok, parsed = pcall(vim.json.decode, data, { luanil = { object = true } })
-  if not ok then
-    logger.error("Failed to parse test output json ", output_file)
-    return {}
-  end
-
-  local results = parsed_json_to_results(parsed, output_file, b.output)
-  return results
-end
-
----@async
----@param spec neotest.RunSpec
----@return neotest.Result[]
-function adapter.results(spec, b, tree)
   local output_file = spec.context.results_path
 
   local success, data = pcall(lib.files.read, output_file)
