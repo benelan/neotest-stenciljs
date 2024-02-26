@@ -3,6 +3,7 @@ local async = require("neotest.async")
 local lib = require("neotest.lib")
 local logger = require("neotest.logging")
 local util = require("neotest-stenciljs.util")
+local parameterized = require("neotest-stenciljs.parameterized")
 
 ---@class neotest.StencilOptions
 ---@field watch? boolean Run test(s) with the `--watchAll` flag
@@ -93,6 +94,30 @@ function adapter.is_test_file(file_path)
   return file_path ~= nil
     and (is_e2e_test_file(file_path) or is_spec_test_file(file_path))
     and has_stencil_dep(file_path)
+end
+
+-- Enrich `it.each` tests with metadata about TS node position
+function adapter.build_position(file_path, source, captured_nodes)
+  local match_type
+  if captured_nodes["test.name"] then
+    match_type = "test"
+  elseif captured_nodes["namespace.name"] then
+    match_type = "namespace"
+  else
+    return
+  end
+
+  ---@type string
+  local name = vim.treesitter.get_node_text(captured_nodes[match_type .. ".name"], source)
+  local definition = captured_nodes[match_type .. ".definition"]
+
+  return {
+    type = match_type,
+    path = file_path,
+    name = name,
+    range = { definition:range() },
+    is_parameterized = captured_nodes["each_property"] and true or false,
+  }
 end
 
 ---@async
@@ -194,11 +219,24 @@ function adapter.discover_positions(path)
     )) @test.definition
   ]]
 
-  return lib.treesitter.parse_positions(
-    path,
-    query,
-    { nested_tests = false, requires_namespace = false }
-  )
+  local positions = lib.treesitter.parse_positions(path, query, {
+    nested_tests = false,
+    requires_namespace = false,
+    build_position = 'require("neotest-stenciljs").build_position',
+  })
+
+  if adapter.parameterized_test_discovery == true then
+    local parameterized_tests_positions = parameterized.get_parameterized_tests_positions(positions)
+
+    if #parameterized_tests_positions > 0 then
+      parameterized.enrich_positions_with_parameterized_tests(
+        positions:data().path,
+        parameterized_tests_positions
+      )
+    end
+  end
+
+  return positions
 end
 
 ---@param path string
@@ -283,7 +321,14 @@ local function get_cwd(file_path)
   return nil
 end
 
-local function parsed_json_to_results(data, output_file, consoleOut)
+local function find_error_position(file, err)
+  -- Look for: /path/to/file.js:123:987
+  local regexp = file:gsub("([^%w])", "%%%1") .. "%:(%d+)%:(%d+)"
+  local _, _, errLine, errColumn = string.find(err, regexp)
+
+  return errLine, errColumn
+end
+
 local function parsed_json_to_results(data, output_file, console_out)
   local tests = {}
 
@@ -324,10 +369,16 @@ local function parsed_json_to_results(data, output_file, console_out)
 
         for i, fail_message in ipairs(assertion_result.failureMessages) do
           local msg = clean_ansi(fail_message)
+          local error_line, error_column = find_error_position(test_file, msg)
 
           errors[i] = {
-            line = (assertion_result.location and assertion_result.location.line - 1 or nil),
-            column = (assertion_result.location and assertion_result.location.column or nil),
+            line = (error_line or assertion_result.location and assertion_result.location.line) - 1
+              or nil,
+            column = (
+              error_column
+              or assertion_result.location and assertion_result.location.column
+              or 1
+            ) - 1,
             message = msg,
           }
 
@@ -361,6 +412,10 @@ function adapter.build_spec(args)
 
   if pos.type == "namespace" then
     test_name_pattern = "^ " .. escape_test_pattern(pos.name)
+  end
+
+  if pos.is_parameterized then
+    test_name_pattern = parameterized.replace_test_parameters_with_regex(test_name_pattern)
   end
 
   local binary = get_stencil_command(pos.path)
@@ -460,6 +515,10 @@ setmetatable(adapter, {
 
     if opts.no_build ~= nil then
       adapter.no_build = opts.no_build
+    end
+
+    if opts.parameterized_test_discovery ~= nil then
+      adapter.parameterized_test_discovery = opts.parameterized_test_discovery
     end
 
     if is_callable(opts.env) then
