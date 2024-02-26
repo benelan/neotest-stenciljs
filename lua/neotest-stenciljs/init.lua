@@ -110,6 +110,14 @@ function adapter.discover_positions(path)
       )
     )) @namespace.definition
     ; --------------------------------------------------------------------------
+    ; Matches: `describe('context', function() {})`
+    ((call_expression
+      function: (identifier) @func_name (#eq? @func_name "describe")
+      arguments: (arguments
+        [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (function_expression)
+      )
+    )) @namespace.definition
+    ; --------------------------------------------------------------------------
     ; Matches: `describe.only('context', () => {})`
     ((call_expression
       function: (member_expression
@@ -117,6 +125,16 @@ function adapter.discover_positions(path)
       )
       arguments: (arguments
         [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (arrow_function)
+      )
+    )) @namespace.definition
+    ; --------------------------------------------------------------------------
+    ; Matches: `describe.only('context', function() {})`
+    ((call_expression
+      function: (member_expression
+        object: (identifier) @func_name (#any-of? @func_name "describe")
+      )
+      arguments: (arguments
+        [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (function_expression)
       )
     )) @namespace.definition
     ; --------------------------------------------------------------------------
@@ -130,6 +148,16 @@ function adapter.discover_positions(path)
       arguments: (arguments
         [(string (string_fragment) @namespace.name) (template_string (string_fragment) @namespace.name)] (arrow_function)
       )
+    )) @namespace.definition
+    ; --------------------------------------------------------------------------
+    ; Matches: `describe.each(['data'])('context', function() {})`
+    ((call_expression
+      function: (call_expression
+        function: (member_expression
+          object: (identifier) @func_name (#any-of? @func_name "describe")
+        )
+      )
+      arguments: (arguments (string (string_fragment) @namespace.name) (function_expression))
     )) @namespace.definition
     ; --------------------------------------------------------------------------
     ; -- Tests --
