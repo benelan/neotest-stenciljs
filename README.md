@@ -15,6 +15,7 @@ This plugin provides a [StencilJS](https://stenciljs.com) adapter for the
     - [Running tests without building](#running-tests-without-building)
   - [Known issues](#known-issues)
   - [Credits](#credits)
+  - [Disclaimer](#disclaimer)
 
 <!--toc:end-->
 
@@ -197,3 +198,10 @@ This neotest adapter was originally copied from [`neotest-jest`](https://github.
 and [`neotest-vitest`](https://github.com/marilari88/neotest-vitest). StencilJS
 [uses Jest](https://stenciljs.com/docs/testing-overview) under the hood, so a
 lot of the code remains unchanged.
+
+## Disclaimer
+
+I am not affiliated, associated, authorized, endorsed by, or in any way
+officially connected with StencilJS and Ionic. Any information or opinions
+expressed in this project are solely mine and do not necessarily reflect the
+views or opinions of StencilJS and Ionic.
