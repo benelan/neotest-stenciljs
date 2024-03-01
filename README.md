@@ -13,6 +13,7 @@ This plugin provides a [StencilJS](https://stenciljs.com) adapter for the
   - [Usage](#usage)
     - [Running tests in watch mode](#running-tests-in-watch-mode)
     - [Running tests without building](#running-tests-without-building)
+  - [Known issues](#known-issues)
   - [Credits](#credits)
 
 <!--toc:end-->
@@ -51,7 +52,7 @@ installed, otherwise no tests will be found:
 
 See the source code for the available configuration options:
 
-https://github.com/benelan/neotest-stenciljs/blob/a54fa19ca5cc6179bfa1090390e30bb844fa6784/lua/neotest-stenciljs/init.lua#L7-L13
+https://github.com/benelan/neotest-stenciljs/blob/f98366cee0b767e4779a037a9f1269c4f35bfe69/lua/neotest-stenciljs/init.lua#L7-L13
 
 An example configuration:
 
@@ -177,6 +178,18 @@ vim.keymap.set(
   { noremap = true, desc = "Run test (watch)" }
 )
 ```
+
+## Known issues
+
+This adapter currently doesn't work well with Stencil/Jest's
+[`it.each`](https://jestjs.io/docs/api#1-testeachtablename-fn-timeout)
+syntax, but I hope to fix that in the future. Please log an issue if that's
+something you want supported.
+
+The adapter also doesn't work well on tests within `for`/`forEach` loops. Using
+the builtin [`it.each`](https://jestjs.io/docs/api#1-testeachtablename-fn-timeout)
+or [`describe.each`](https://jestjs.io/docs/api#describeeachtablename-fn-timeout)
+syntax should be preferred anyway.
 
 ## Credits
 
