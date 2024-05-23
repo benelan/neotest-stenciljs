@@ -21,7 +21,8 @@ This plugin provides a [StencilJS](https://stenciljs.com) adapter for the
 
 ## Installation
 
-Install the adapter using your plugin manager, for example with `lazy.nvim`:
+Install the adapter using your plugin manager, for example with
+[`lazy.nvim`](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
@@ -42,12 +43,13 @@ Install the adapter using your plugin manager, for example with `lazy.nvim`:
 }
 ```
 
-**IMPORTANT:** Make sure you have the appropriate `treesitter` language parsers
-installed, otherwise no tests will be found:
-
-```vim
-:TSInstall javascript typescript tsx
-```
+> [!IMPORTANT]
+> Make sure you have the appropriate `treesitter` language parsers
+> installed, otherwise no tests will be found:
+>
+> ```vim
+> :TSInstall javascript typescript tsx
+> ```
 
 ## Configuration
 
