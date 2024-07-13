@@ -1,8 +1,9 @@
----@diagnostic disable: undefined-field
 local async = require("neotest.async")
 local lib = require("neotest.lib")
 local logger = require("neotest.logging")
 local util = require("neotest-stenciljs.util")
+
+---@diagnostic disable: undefined-field, duplicate-set-field
 
 ---@class neotest.StencilOptions
 ---@field watch? boolean Run test(s) with the `--watch` flag
@@ -14,8 +15,6 @@ local util = require("neotest-stenciljs.util")
 
 ---@class neotest.Adapter
 local adapter = { name = "neotest-stenciljs" }
-
-local root_package_json = vim.fn.getcwd() .. "/package.json"
 
 ---@param json_content string
 ---@return boolean
@@ -35,33 +34,25 @@ local function has_stencil_dep_in_json(json_content)
   return false
 end
 
----@return boolean
-local function has_stencil_dep_in_project_root()
-  local success, json_content = pcall(lib.files.read, root_package_json)
-  if not success then
-    print("cannot read package.json")
-    return false
-  end
-
-  return has_stencil_dep_in_json(json_content)
-end
-
 ---@param path string
 ---@return boolean
 local function has_stencil_dep(path)
-  local root_path = lib.files.match_root_pattern("package.json")(path)
+  return nil
+    ~= vim
+      .iter(vim.fs.find("package.json", {
+        path = path,
+        upward = true,
+        stop = vim.uv.os_homedir(),
+      }))
+      :find(function(file)
+        local success, json_content = pcall(lib.files.read, file)
+        if not success then
+          print("cannot read package.json")
+          return false
+        end
 
-  if not root_path then
-    return false
-  end
-
-  local success, json_content = pcall(lib.files.read, root_path .. "/package.json")
-  if not success then
-    print("cannot read package.json")
-    return false
-  end
-
-  return has_stencil_dep_in_json(json_content) or has_stencil_dep_in_project_root()
+        return has_stencil_dep_in_json(json_content)
+      end)
 end
 
 ---@param file_path string
@@ -79,30 +70,8 @@ end
 ---@param path string
 ---@return string
 local function get_stencil_command(path)
-  local git_ancestor = util.find_git_ancestor(path)
-
-  local function find_binary(p)
-    local root_path = util.find_node_modules_ancestor(p)
-    local stencil_binary = util.path.join(root_path, "node_modules", ".bin", "stencil")
-
-    if util.path.exists(stencil_binary) then
-      return stencil_binary
-    end
-
-    -- If no binary found and the current directory isn't the parent
-    -- git ancestor, let's traverse up the tree again
-    if root_path ~= git_ancestor then
-      return find_binary(util.path.dirname(root_path))
-    end
-  end
-
-  local found_binary = find_binary(path)
-
-  if found_binary then
-    return found_binary
-  end
-
-  return "npx stencil"
+  local binary = util.find_in_parent_node_modules({ ".bin", "stencil" }, path)
+  return binary and binary or "npx stencil"
 end
 
 local function escape_test_pattern(s)
@@ -353,6 +322,7 @@ function adapter.build_spec(args)
 
   local pos = args.tree:data()
   local test_name_pattern = ".*"
+  local path = pos.path -- and Path:normalize(pos.path)
 
   if pos.type == "test" then
     test_name_pattern = escape_test_pattern(pos.name) .. "$"
@@ -362,11 +332,11 @@ function adapter.build_spec(args)
     test_name_pattern = "^ " .. escape_test_pattern(pos.name)
   end
 
-  local binary = get_stencil_command(pos.path)
+  local binary = get_stencil_command(path)
   local command = vim.split(binary, "%s+")
 
-  local is_spec = is_spec_test_file(pos.path)
-  local is_e2e = is_e2e_test_file(pos.path)
+  local is_spec = is_spec_test_file(path)
+  local is_e2e = is_e2e_test_file(path)
 
   local watch = args.watch == nil and adapter.watch or args.watch
   local no_build = args.no_build == nil and adapter.no_build or args.no_build
@@ -387,7 +357,8 @@ function adapter.build_spec(args)
     string.format("--outputFile='%s'", results_path),
     string.format("--testNamePattern='%s'", test_name_pattern),
     "--",
-    pos.path,
+    -- https://github.com/nvim-neotest/neotest-jest/issues/108
+    util.is_windows and path or escape_test_pattern(path),
   })
 
   -- creating empty file for streaming results
@@ -396,10 +367,10 @@ function adapter.build_spec(args)
 
   return {
     command = command,
-    cwd = get_cwd(pos.path),
+    cwd = get_cwd(path),
     context = {
       results_path = results_path,
-      file = pos.path,
+      file = path,
       stop_stream = stop_stream,
     },
     strategy = get_strategy_config(args.strategy, command),
