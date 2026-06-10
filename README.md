@@ -139,7 +139,7 @@ during setup:
 ```lua
 require('neotest').setup({
   adapters = {
-    require('neotest-jest')({ watch = true }),
+    require('neotest-stenciljs')({ watch = true }),
   }
 })
 ```
@@ -163,7 +163,7 @@ can enable the flag during setup:
 ```lua
 require('neotest').setup({
   adapters = {
-    require('neotest-jest')({ no_build = true }),
+    require('neotest-stenciljs')({ no_build = true }),
   }
 })
 ```
